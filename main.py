@@ -1,19 +1,39 @@
 import json
+import os.path
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from typing import Dict, Tuple, List
 
 import createrepo_c
 
+import utils
+from redis_controller import _is_cached, _load_cached, _cache
+
 
 def get_repodata_by_repo_url(repo_url: str) -> Dict:
-    repodata = createrepo_c.Metadata()
-    repodata.locate_and_load_xml(repo_url)
-    return {
-        key: {'name': repodata.get(key).name, 'epoch': repodata.get(key).epoch, 'version': repodata.get(key).version,
-              'release': repodata.get(key).release, 'arch': repodata.get(key).arch,
-              'nevra': repodata.get(key).nevra(), }
-        for key in repodata.keys()}
+    checksum = utils.get_primary_checksum(repo_url)
+    if _is_cached(checksum):
+        result = _load_cached(checksum)
+        print('loaded')
+        return result
+    else:
+        if os.path.isfile(f'./repodata/{checksum}.json'):
+            file = open(f'./repodata/{checksum}.json')
+            obj = json.load(file)
+            _cache(checksum, obj)
+            return obj
+        repodata = createrepo_c.Metadata()
+        repodata.locate_and_load_xml(repo_url)
+        data = {key:
+                    {'name': repodata.get(key).name, 'epoch': repodata.get(key).epoch,
+                     'version': repodata.get(key).version,
+                     'release': repodata.get(key).release, 'arch': repodata.get(key).arch,
+                     'nevra': repodata.get(key).nevra(), }
+                for key in repodata.keys()}
+        _cache(checksum, data)
+        save_to_json(f'./repodata/{checksum}.json', data)
+        print('cached')
+        return data
 
 
 def merge_repo(links) -> Dict:
@@ -97,20 +117,20 @@ def get_unique_packages_by_nevra(first_dict: Dict, second_dict: Dict) -> Tuple[D
     return first_dict, second_dict
 
 
-def get_youngest_namesake_packages(first_dict: Dict, second_dict: Dict):
+def get_newest_namesake_packages(first_dict: Dict, second_dict: Dict):
     out = []
     for key in first_dict.keys():
-        # print(key, first_dict.get(key), second_dict.get(key, 'none'))
         if key in second_dict:
             first = first_dict[key]['epoch'] + ':' + first_dict[key]['version'] + '.' + first_dict[key]['release']
             second = second_dict[key]['epoch'] + ':' + second_dict[key]['version'] + '.' + second_dict[key]['release']
-            out.append({key: [first, second]})
+            if first != second:
+                out.append({key: [first, second]})
     return out
 
 
 def save_to_json(file_name: str, obj) -> None:
     with open(file_name, 'w') as out:
-        json.dump(obj, out)
+        json.dump(obj, out, indent=4)
 
 
 if __name__ == '__main__':
@@ -118,8 +138,8 @@ if __name__ == '__main__':
 
     alpha_links = ['http://repo.red-soft.ru/redos/7.3/x86_64/os/', 'http://repo.red-soft.ru/redos/7.3/x86_64/updates/']
     # beta_links = ['http://repo.red-soft.ru/redos/7.3c/x86_64/os/', 'http://repo.red-soft.ru/redos/7.3c/x86_64/updates/']
-    # beta_links = ['http://repo.red-soft.ru/redos/8.0/x86_64/os/', 'http://repo.red-soft.ru/redos/8.0/x86_64/updates/']
-    beta_links = ['http://mirror.centos.org/centos/7/os/x86_64', 'http://mirror.centos.org/centos/7/updates/x86_64']
+    beta_links = ['http://repo.red-soft.ru/redos/8.0/x86_64/os/', 'http://repo.red-soft.ru/redos/8.0/x86_64/updates/']
+    # beta_links = ['http://mirror.centos.org/centos/7/os/x86_64', 'http://mirror.centos.org/centos/7/updates/x86_64']
 
     with ProcessPoolExecutor() as executor:
         future_alpha = executor.submit(merge_repo, alpha_links)
@@ -130,21 +150,21 @@ if __name__ == '__main__':
     alpha_name_dict, alpha_package_data_dict, alpha_nerva_dict = parse_merged_repos(alpha)
     beta_name_dict, beta_package_data_dict, beta_nerva_dict = parse_merged_repos(beta)
     alpha_unique_by_name, beta_unique_by_name = get_unique_packages_by_name(alpha_name_dict, beta_name_dict)
-    version_differed, release_differed, version_release_differed = get_differed_by_version_release(
-        alpha_package_data_dict, beta_package_data_dict)
+    # version_differed, release_differed, version_release_differed = get_differed_by_version_release(
+    # alpha_package_data_dict, beta_package_data_dict)
 
     alpha_unique_by_nerva, beta_unique_by_nerva = get_unique_packages_by_nevra(alpha_nerva_dict, beta_nerva_dict)
-    youngest_namesake_packages = get_youngest_namesake_packages(alpha_package_data_dict, beta_package_data_dict)
+    newest_namesake_packages = get_newest_namesake_packages(alpha_package_data_dict, beta_package_data_dict)
     end2 = time.time()
 
     save_to_json('alpha_unique_by_name.json', alpha_unique_by_name)
     save_to_json('beta_unique_by_name.json', beta_unique_by_name)
-    save_to_json('version.json', version_differed)
-    save_to_json('release.json', release_differed)
-    save_to_json('version_and_release.json', version_release_differed)
+    # save_to_json('version.json', version_differed)
+    # save_to_json('release.json', release_differed)
+    # save_to_json('version_and_release.json', version_release_differed)
     save_to_json('alpha_unique_by_nerva.json', alpha_unique_by_nerva)
     save_to_json('beta_unique_by_nerva.json', beta_unique_by_nerva)
-    save_to_json('youngest_namesake_packages.json', youngest_namesake_packages)
+    save_to_json('newest_namesake_packages.json', newest_namesake_packages)
 
     print(f"Execution time: {end - start} seconds")
     print(f"Execution time: {end2 - end} seconds")

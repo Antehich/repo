@@ -1,1 +1,10 @@
+async-timeout==4.0.3
+beautifulsoup4==4.12.3
+certifi==2024.6.2
+charset-normalizer==3.3.2
 createrepo_c==1.1.2
+idna==3.7
+redis==5.0.7
+requests==2.32.3
+soupsieve==2.5
+urllib3==2.2.2
